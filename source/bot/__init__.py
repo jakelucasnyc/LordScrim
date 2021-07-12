@@ -4,7 +4,10 @@ import discord
 from emoji import emojize, demojize
 
 logger = logging.getLogger('discord')
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
+handler = logging.FileHandler(filename='../discord.log', encoding='utf-8', mode='w')
+handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+logger.addHandler(handler)
 
 
 
@@ -31,6 +34,7 @@ async def on_ready():
 @bot.command()
 async def test(ctx):
     await ctx.send('Test Successful')
+    logger.info('!test command successful')
 
 @bot.command()
 async def teams(ctx):
@@ -43,6 +47,7 @@ async def teams(ctx):
     await pollMessage.add_reaction(twoEmoji)
     global pollMessageId
     pollMessageId = pollMessage.id
+    logger.info('!teams command successful')
 
 @bot.command()
 async def scrim(ctx):
@@ -68,7 +73,7 @@ async def scrim(ctx):
     for reaction in reactions:
         eachReactUser = await reaction.users().flatten()
         eachReactUser = [user for user in eachReactUser if not user.bot]
-        print(f'\n\n{eachReactUser=}\n\n')
+        # print(f'\n\n{eachReactUser=}\n\n')
         users.update({reaction.emoji: eachReactUser})
         # print('Appended')
 
@@ -76,7 +81,8 @@ async def scrim(ctx):
     listIntersection = list(set(users[oneEmoji]) & set(users[twoEmoji]))
     # print(f'{listIntersection=}')
     if listIntersection:
-        await ctx.send("Someone is on both sides at the same time! Please redo the poll.")
+        await ctx.send("Someone is on both sides at the same time! Please redo or fix the poll.")
+        logger.error('Someone was on more than one team during the !teams command. Aborting...')
         return
 
     #putting users into their voice channels
@@ -91,9 +97,11 @@ async def scrim(ctx):
                     await user.move_to(team2Channel, reason='The scrim is starting')
     except discord.errors.HTTPException as e:
         await ctx.send('Everyone scrimming, please join a voice channel before starting the scrim.')
+        logger.error('Not all scrim members in voice chat during !scrim command. Aborting...')
 
     else:
         await ctx.send('Game on! Happy Scrimming!')
+        logger.info('!scrim command successful')
     
 
 @bot.command()
@@ -102,6 +110,7 @@ async def disband(ctx):
     pollMessageId = None
 
     await ctx.send('Team Disbanded!')
+    logger.info('!disband command successful')
 
 @bot.command(aliases=['return'])
 async def return_(ctx):
@@ -122,5 +131,6 @@ async def return_(ctx):
         await player.move_to(generalChannel, reason='Scrimming is over')
     
     await ctx.send('Scrim Over!...for now ;)')
+    logger.info('!return command successful')
 
 
