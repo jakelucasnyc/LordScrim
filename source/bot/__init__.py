@@ -17,7 +17,8 @@ intents.members = True
 
 bot = commands.Bot('/', intents=intents)
 
-pollMessageId = None
+# pollMessageId = None
+guildPollDict = {}
 channels = ['commands', 'general']
 
 oneEmoji = emojize(':one:', use_aliases=True)
@@ -33,7 +34,7 @@ async def on_ready():
 
 @bot.command()
 async def test(ctx):
-    await ctx.send('Test Successful')
+    await ctx.send('Test Successful.')
     logger.info('!test command successful')
 
 @bot.command()
@@ -45,16 +46,19 @@ async def teams(ctx):
 
     await pollMessage.add_reaction(oneEmoji)
     await pollMessage.add_reaction(twoEmoji)
-    global pollMessageId
+    # global pollMessageId
     pollMessageId = pollMessage.id
-    logger.info('!teams command successful')
+    guildPollDict[ctx.guild] = pollMessageId
+    logger.info('teams command successful')
 
 @bot.command()
 async def scrim(ctx):
     #if teams aren't set up yet
-    if pollMessageId is None:
-        await ctx.send("Teams haven't been picked yet. Type '!teams' to create the team poll")
+    if not ctx.guild in guildPollDict.keys():
+        await ctx.send("Teams haven't been picked yet. Type '!teams' to create the team poll.")
         return
+
+    pollMessageId = guildPollDict[ctx.guild]
 
     #fetching poll message
     pollMessage = await ctx.fetch_message(pollMessageId)
@@ -101,16 +105,19 @@ async def scrim(ctx):
 
     else:
         await ctx.send('Game on! Happy Scrimming!')
-        logger.info('!scrim command successful')
+        logger.info('scrim command successful')
     
 
 @bot.command()
 async def disband(ctx):
-    global pollMessageId
-    pollMessageId = None
-
-    await ctx.send('Team Disbanded!')
-    logger.info('!disband command successful')
+    try:
+        guildPollDict.pop(ctx.guild) 
+    except KeyError as e:
+        await ctx.send('No team was created.')
+    else:
+        await ctx.send('Team Disbanded.')
+    finally:
+        logger.info('disband command successful')
 
 @bot.command(aliases=['return'])
 async def return_(ctx):
@@ -131,6 +138,6 @@ async def return_(ctx):
         await player.move_to(generalChannel, reason='Scrimming is over')
     
     await ctx.send('Scrim Over!...for now ;)')
-    logger.info('!return command successful')
+    logger.info('return command successful')
 
 
