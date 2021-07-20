@@ -15,7 +15,7 @@ logger.addHandler(handler)
 intents = discord.Intents.default()
 intents.members = True
 
-bot = commands.Bot('/', intents=intents)
+bot = commands.Bot('scrim.', intents=intents)
 
 # pollMessageId = None
 guildPollDict = {}
