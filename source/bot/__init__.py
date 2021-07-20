@@ -15,7 +15,7 @@ logger.addHandler(handler)
 intents = discord.Intents.default()
 intents.members = True
 
-bot = commands.Bot('!', intents=intents)
+bot = commands.Bot('/', intents=intents)
 
 pollMessageId = None
 channels = ['commands', 'general']
@@ -59,12 +59,12 @@ async def scrim(ctx):
     #fetching poll message
     pollMessage = await ctx.fetch_message(pollMessageId)
     #getting the ids of the channels needed
-    team1Id = [channel.id for channel in ctx.guild.channels if channel.name == team1Name][0]
-    team2Id = [channel.id for channel in ctx.guild.channels if channel.name == team2Name][0]
-    team1Channel = bot.get_channel(team1Id)
-    team2Channel = bot.get_channel(team2Id)
-    # team1Channel = bot.get_channel(848235185384325181)
-    # team2Channel = bot.get_channel(799472682545709056)
+    # team1Id = [channel.id for channel in ctx.guild.channels if channel.name == team1Name][0]
+    # team2Id = [channel.id for channel in ctx.guild.channels if channel.name == team2Name][0]
+    # team1Channel = bot.get_channel(team1Id)
+    # team2Channel = bot.get_channel(team2Id)
+    team1Channel = bot.get_channel(848235185384325181)
+    team2Channel = bot.get_channel(799472682545709056)
 
     reactions = pollMessage.reactions
     # print(f'{reactions=}')
@@ -115,15 +115,15 @@ async def disband(ctx):
 @bot.command(aliases=['return'])
 async def return_(ctx):
 
-    team1Id = [channel.id for channel in ctx.guild.channels if channel.name == team1Name][0]
-    team2Id = [channel.id for channel in ctx.guild.channels if channel.name == team2Name][0]
-    generalId = [channel.id for channel in ctx.guild.channels if channel.name == generalName][0]
-    team1Channel = bot.get_channel(team1Id)
-    team2Channel = bot.get_channel(team2Id)
-    generalChannel = bot.get_channel(generalId)
-    # team1Channel = bot.get_channel(848235185384325181)
-    # team2Channel = bot.get_channel(799472682545709056)
-    # generalChannel = bot.get_channel(821957344622673960)
+    # team1Id = [channel.id for channel in ctx.guild.channels if channel.name == team1Name][0]
+    # team2Id = [channel.id for channel in ctx.guild.channels if channel.name == team2Name][0]
+    # generalId = [channel.id for channel in ctx.guild.channels if channel.name == generalName][0]
+    # team1Channel = bot.get_channel(team1Id)
+    # team2Channel = bot.get_channel(team2Id)
+    # generalChannel = bot.get_channel(generalId)
+    team1Channel = bot.get_channel(848235185384325181)
+    team2Channel = bot.get_channel(799472682545709056)
+    generalChannel = bot.get_channel(788006982534692864)
 
     players = team1Channel.members + team2Channel.members
 
