@@ -13,7 +13,7 @@ if __name__ == '__main__':
         scrim = bot.bot
         scrim.run(token)
     except Exception as e:
-        logging.exception('Program Crashed: {e=}')
+        logging.exception(f'Program Crashed: {e}')
 
     else:
-        logging.info('Process finished with error code 0')
+        logging.info('Process complete') 
