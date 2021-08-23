@@ -3,43 +3,35 @@ import discord
 from bot import bot
 import logging
 import sqlalchemy
-from sqlalchemy import select, insert, update, delete, text
+from sqlalchemy import select, update, delete, text
+from sqlalchemy.dialects.mysql import insert
 from bot.database import DBConn
 from bot.database.models.scrimPlayer import ScrimPlayer
 from bot.database.models.guild import Guild
 from emoji import emojize, demojize
 import asyncio
-
-import cProfile
-import io
-import pstats
-import contextlib
-
-@contextlib.contextmanager
-def profiled():
-    pr = cProfile.Profile()
-    pr.enable()
-    yield
-    pr.disable()
-    s = io.StringIO()
-    ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
-    ps.print_stats()
-    # uncomment this to see who's calling what
-    # ps.print_callers()
-    print(s.getvalue())
+import sys
 
 
 class Scrim(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+
+        #logging
         self._logger = logging.getLogger('ScrimCog')
+        self._logger.setLevel(logging.INFO)
+        self._handler = logging.StreamHandler(sys.stdout)
+        self._handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+        self._logger.addHandler(self._handler)
+
+        #database
         self._dbConn = DBConn()
-        # self._engine = self._dbConn.engine
+        self._engine = self._dbConn.engine
         self._session = self._dbConn.session
 
     def isRegisteredGuild(self, conn, guildId:str):
-        record = conn.query(Guild.guild_id).filter_by(guild_id=str(guildId)).first()
+        record = conn.execute(select(Guild.guild_id).where(Guild.guild_id == str(guildId))).first()
         if record is None:
             return False
         else:
@@ -49,10 +41,12 @@ class Scrim(commands.Cog):
         return member.bot
 
     @commands.command()
+    @commands.guild_only()
     async def teams(self, ctx):
-        with self._session.begin() as conn:
 
-            guildRecord = conn.query(Guild).filter_by(guild_id=str(ctx.guild.id)).first()
+        with self._engine.connect() as conn:
+
+            guildRecord = conn.execute(select(Guild).where(Guild.guild_id == str(ctx.guild.id))).first()
             if guildRecord is None:
                 guildRecord = Guild(guild_id=str(ctx.guild.id))
             
@@ -71,13 +65,14 @@ class Scrim(commands.Cog):
             await pollMessage.add_reaction(twoEmoji)
             pollMessageId = pollMessage.id
 
-            guildRecord.teams_message_id = pollMessageId
-            conn.add(guildRecord)
-            conn.commit()
+            stmt = insert(Guild).values(guild_id=str(ctx.guild.id), teams_message_id=pollMessageId)
+            onDuplicateStmt = stmt.on_duplicate_key_update(teams_message_id=pollMessageId)
+            conn.execute(onDuplicateStmt)
+            # conn.commit()
 
             
 
-            self._logger.info('teams command successful')
+            self._logger.debug('teams command successful')
 
     async def updateTeamsMessage(self, message, players):
         ":param List[tuple] players: list of tuples with each tuple as (display_name, side)"
@@ -102,6 +97,7 @@ class Scrim(commands.Cog):
         await message.edit(content='\n'.join(['\nChoose your side!', team1TextBlock, team2TextBlock]))
 
     @commands.Cog.listener()
+    @commands.guild_only()
     async def on_reaction_add(self, reaction, member):
         # member = payload.member
         # channel = self.bot.get_channel(payload.channel_id)
@@ -109,45 +105,36 @@ class Scrim(commands.Cog):
         
         #checking if the reactor is a bot
         if self.isBot(member):
-            self._logger.info('Bot is reacting. Not responding to this added reaction.')
+            self._logger.debug('Bot is reacting. Not responding to this added reaction.')
             return
         guildId = reaction.message.guild.id
-        with self._session.begin() as conn:
+        with self._engine.connect() as conn:
             #checking if the guild is in the database. If not, then the teams poll has never been run and reactions shouldn't be reacted to
             if not self.isRegisteredGuild(conn, str(guildId)):
-                self._logger.info('Not a registered guild. Not responding to this added reaction.')
+                self._logger.debug('Not a registered guild. Not responding to this added reaction.')
                 return
 
             #querying the guild to get necessary information
-            teamsMessageId ,= conn.query(Guild.teams_message_id).filter_by(guild_id=str(guildId)).first()
-            # self._logger.info(teamsMessageId)
+            teamsMessageId ,= conn.execute(select(Guild.teams_message_id).where(Guild.guild_id == str(guildId))).first()
             #if no teams message is valid
             if teamsMessageId != str(reaction.message.id): 
-                self._logger.info('No teams poll registered. Not responsding to this added reaction.')
+                self._logger.debug('No teams poll registered. Not responsding to this added reaction.')
                 return
-
-            #defining a checking function when waiting for the reaction_remove event
-            # def checkCorrectReaction(innerReaction, innerMember):
-            #     return innerMember.id == member.id and innerReaction == reactionItem
 
         #removing previous reactions to other teams
         for reactionItem in reaction.message.reactions:
             for user in await reactionItem.users().flatten():
                 if user.id == member.id and reaction != reactionItem: 
 
-                    with self._session.begin() as conn:
-                        autoReactionRemovalRecord ,= conn.query(ScrimPlayer.autoReactionRemoval).filter_by(member_id=str(member.id)).first()
-                        autoReactionRemovalRecord = True
-                        conn.execute(update(ScrimPlayer).where(ScrimPlayer.member_id == str(member.id)).values(autoReactionRemoval=autoReactionRemovalRecord).execution_options(synchronize_session='fetch'))
-                        conn.commit()
-
-                    await reactionItem.remove(member)
-                    # await self.bot.wait_for('reaction_remove', check=checkCorrectReaction)
-                    #waiting for the on_reaction_remove function to complete
-                    # await asyncio.sleep(2)
-            
-        with self._session.begin() as conn:
-            team_1_emoji_text, team_2_emoji_text = conn.query(Guild.team_1_emoji_text, Guild.team_2_emoji_text).filter_by(guild_id=str(guildId)).first()
+                    with self._engine.connect() as conn:
+                        #writing into the database that the reaction is being removed automatically so that the on_reaction_remove handler doesn't act meaningfully
+                        conn.execute(update(ScrimPlayer).where(ScrimPlayer.member_id == str(member.id)).values(autoReactionRemoval=True))
+                        await reactionItem.remove(member)
+                        #waiting for a short duration so that the on_reaction_remove handler runs before this continues
+                        await asyncio.sleep(0.1)
+                        
+        with self._engine.begin() as conn:
+            team_1_emoji_text, team_2_emoji_text = conn.execute(select(Guild.team_1_emoji_text, Guild.team_2_emoji_text).where(Guild.guild_id == str(guildId))).first()
 
             #setting sides based on the type of emoji that was reacted
             team1Emoji = emojize(team_1_emoji_text, use_aliases=True)
@@ -157,150 +144,136 @@ class Scrim(commands.Cog):
             elif reaction.emoji == team2Emoji:
                 side = 2
 
-            #querying the player if he/she is in the database already. If not, we create the entry and fill in the necessary information
-            player = conn.query(ScrimPlayer).filter_by(member_id=str(member.id)).first()
-            if player is None:
-                player = ScrimPlayer(member_id=str(member.id))
-            # conn.refresh(player)
-            player.display_name = member.display_name
-            player.guild_id = str(guildId) 
-            player.side = side
+        await self.addPlayer(member, reaction.message, side)
+            
+
+    async def addPlayer(self, member, message, side):
+        guildId = str(member.guild.id)
+        with self._engine.begin() as conn:
 
             #adding player to database
-            conn.add(player)
-            conn.flush()
+            stmt = insert(ScrimPlayer).values(member_id=str(member.id), display_name=member.display_name, guild_id=str(guildId), side=side).on_duplicate_key_update(display_name=member.display_name, guild_id=str(guildId), side=side)
+            conn.execute(stmt)
 
             #getting a list of players to be used in the updated message
-            players = conn.query(ScrimPlayer.display_name, ScrimPlayer.side).filter_by(guild_id=str(guildId)).all()
-            await self.updateTeamsMessage(reaction.message, players)
-            self._logger.info('updateTeamsMessage in reaction_add')
-            conn.commit()
+            players = conn.execute(select(ScrimPlayer.display_name, ScrimPlayer.side).where(ScrimPlayer.guild_id == str(guildId))).all()
+            await self.updateTeamsMessage(message, players)
+            self._logger.debug('updateTeamsMessage in reaction_add')
+
 
     @commands.Cog.listener()
+    @commands.guild_only()
     async def on_reaction_remove(self, reaction, member):
         #checking if the reactor is a bot
         if self.isBot(member):
-            self._logger.info('Bot is reacting. Not responding to this removed reaction.')
+            self._logger.debug('Bot is reacting. Not responding to this removed reaction.')
             return
         guildId = reaction.message.guild.id
-        with self._session.begin() as conn:
+        with self._engine.connect() as conn:
             #checking if the guild is in the database. If not, then the teams poll has never been run and reactions shouldn't be reacted to
             if not self.isRegisteredGuild(conn, str(guildId)):
-                self._logger.info('Not a registered guild. Not responding to this removed reaction.')
+                self._logger.debug('Not a registered guild. Not responding to this removed reaction.')
                 return
 
-            teamsMessageId ,= conn.query(Guild.teams_message_id).filter_by(guild_id=str(guildId)).first()
+            #querying the database for a poll message evoked by the "teams" command
+            teamsMessageId ,= conn.execute(select(Guild.teams_message_id).where(Guild.guild_id == str(guildId))).first()
             #if no teams message is valid
             if teamsMessageId != str(reaction.message.id): 
-                self._logger.info('No teams poll registered. Not responsding to this removed reaction.')
+                self._logger.debug('No teams poll registered. Not responsding to this removed reaction.')
                 return
 
-            autoReactionRemovalRecord ,= conn.query(ScrimPlayer.autoReactionRemoval).filter_by(member_id=str(member.id)).first()
+            #checking if this event was caused by an automatic reaction removal
+            autoReactionRemovalRecord ,= conn.execute(select(ScrimPlayer.autoReactionRemoval).where(ScrimPlayer.member_id == str(member.id))).first()
             if autoReactionRemovalRecord == True:
-                self._logger.info('Automatically removed reaction.')
-                autoReactionRemovalRecord = False
-                # conn.execute(update(ScrimPlayer, whereclause=text(f'scrim_player.member_id={member.id}'), values={'autoReactionRemoval': autoReactionRemovalRecord}))
-                conn.execute(update(ScrimPlayer).where(ScrimPlayer.member_id == str(member.id)).values(autoReactionRemoval=autoReactionRemovalRecord).execution_options(synchronize_session='fetch'))
-                conn.commit()
+                conn.execute(update(ScrimPlayer).where(ScrimPlayer.member_id == str(member.id)).values(autoReactionRemoval=False))
+                self._logger.debug('Automatically removed reaction.')
                 return
 
-        with self._session.begin() as conn:
+            await self.removePlayer(member, reaction.message)
+
+
+    async def removePlayer(self, member, message):
+        guildId = str(member.guild.id)
+        with self._engine.begin() as conn:
             #querying the player to delete them from the database
-            player = conn.query(ScrimPlayer).filter_by(member_id=str(member.id)).first()
+            player = conn.execute(select(ScrimPlayer.member_id).where(ScrimPlayer.member_id == str(member.id))).first()
             if player is None:
                 self._logger.warning('Player "{member.display_name}" is removing a reaction from the teams , but is not registered in the database')
                 return
-            conn.delete(player)
-            # conn.flush()
+            conn.execute(delete(ScrimPlayer).where(ScrimPlayer.member_id == str(member.id)))
 
             #updating the teams poll to accommodate the changes to the roster
-            players = conn.query(ScrimPlayer.display_name, ScrimPlayer.side).filter_by(guild_id=str(guildId)).all()
-            await self.updateTeamsMessage(reaction.message, players)
-            self._logger.info('updateTeamsMessage in reaction_remove')
-            conn.commit()
-
-            
+            players = conn.execute(select(ScrimPlayer.display_name, ScrimPlayer.side).where(ScrimPlayer.guild_id == str(guildId))).all()
+            await self.updateTeamsMessage(message, players)
+            self._logger.debug('updateTeamsMessage in reaction_remove')
 
     @commands.command()
+    @commands.guild_only()
     async def scrim(self, ctx):
         #if teams aren't set up yet
-        if not ctx.guild in guildPollDict.keys():
-            await ctx.send("Teams haven't been picked yet. Type '!teams' to create the team poll.")
-            return
+        with self._engine.connect() as conn:
+            selectGuildStmt = select(Guild).where(Guild.guild_id == str(ctx.guild.id)) 
+            guildRecord = conn.execute(selectGuildStmt).first()
+            if guildRecord is None:
+                await ctx.send('This server is unregistered. Please use the register command to register this server.') 
+                return
+            if guildRecord['teams_message_id'] is None:
+                await ctx.send("Teams haven't been picked yet. Please use the teams command to pick teams for the scrim.")
+                return
+            if guildRecord['team_1_channel_id'] is None:
+                await ctx.send("Team 1 voice channel has not been set. Please use the setChannel1 command to choose a team 1 voice channel.")
+                return
+            if guildRecord['team_2_channel_id'] is None:
+                await ctx.send("Team 1 voice channel has not been set. Please use the setChannel2 command to choose a team 1 voice channel.")
+                return
+            if guildRecord['general_channel_id'] is None:
+                await ctx.send("General voice channel has not been set. Please use the setChannelGeneral command to choose a team 1 voice channel.")
+                return
 
-        pollMessageId = guildPollDict[ctx.guild]
+            team1Channel = self.bot.get_channel(int(guildRecord['team_1_channel_id']))
+            team2Channel = self.bot.get_channel(int(guildRecord['team_2_channel_id']))
 
-        #fetching poll message
-        pollMessage = await ctx.fetch_message(pollMessageId)
-        #getting the ids of the channels needed
-        # team1Id = [channel.id for channel in ctx.guild.channels if channel.name == team1Name][0]
-        # team2Id = [channel.id for channel in ctx.guild.channels if channel.name == team2Name][0]
-        # team1Channel = self.bot.get_channel(team1Id)
-        # team2Channel = self.bot.get_channel(team2Id)
-        team1Channel = self.bot.get_channel(848235185384325181)
-        team2Channel = self.bot.get_channel(799472682545709056)
+            selectPlayersStmt = select(ScrimPlayer.member_id, ScrimPlayer.side).where(ScrimPlayer.guild_id == str(ctx.guild.id))
+            players = conn.execute(selectPlayersStmt).all()
+            # print(players)
 
-        reactions = pollMessage.reactions
-        # print(f'{reactions=}')
-        users = {}
-        #getting users who used each reaction
-        for reaction in reactions:
-            eachReactUser = await reaction.users().flatten()
-            eachReactUser = [user for user in eachReactUser if not user.bot]
-            # print(f'\n\n{eachReactUser=}\n\n')
-            users.update({reaction.emoji: eachReactUser})
-            # print('Appended')
 
-        #checking to see if no one is on more than one team
-        listIntersection = list(set(users[oneEmoji]) & set(users[twoEmoji]))
-        # print(f'{listIntersection=}')
-        if listIntersection:
-            await ctx.send("Someone is on self.both sides at the same time! Please redo or fix the poll.")
-            self._logger.error('Someone was on more than one team during the !teams command. Aborting...')
-            return
+            try:
+                for player in players:
+                    member = ctx.guild.get_member(int(player[0]))
+                    if player[1] == 1:
+                        await member.move_to(team1Channel, reason='The scrim is starting.')
+                    elif player[1] == 2:
+                        await member.move_to(team2Channel, reason='The scrim is starting.')
+                    await asyncio.sleep(0.5)
 
-        #putting users into their voice channels
-        try:
-            for key, userList in users.items():
-                if key == oneEmoji:
-                    for user in userList:
-                        await user.move_to(team1Channel, reason='The scrim is starting') 
-                
-                elif key == twoEmoji:
-                    for user in userList:
-                        await user.move_to(team2Channel, reason='The scrim is starting')
-        except discord.errors.HTTPException as e:
-            await ctx.send('Everyone scrimming, please join a voice channel before starting the scrim.')
-            self._logger.error('Not all scrim members in voice chat during !scrim command. Aborting...')
+            except discord.errors.HTTPException as e:
+                await ctx.send('Everyone scrimming, please join a voice channel before starting the scrim.')
+                self._logger.error('Not all scrim members in voice chat during scrim command. Aborting...')
+            else:
+                await ctx.send('Game on! Happy Scrimming!')
+                self._logger.debug('scrim command successful')
 
-        else:
-            await ctx.send('Game on! Happy Scrimming!')
-            self._logger.info('scrim command successful')
-        
 
     @commands.command()
+    @commands.guild_only()
     async def disband(self, ctx):
-        try:
-            guildPollDict.pop(ctx.guild) 
-        except KeyError as e:
-            await ctx.send('No team was created.')
-        else:
-            await ctx.send('Team Disbanded.')
-        finally:
-            self._logger.info('disband command successful')
+        with self._engine.connect() as conn:
+            stmt = update(Guild).where(Guild.guild_id == str(ctx.guild.id)).values(teams_message_id=sqlalchemy.null())
+            conn.execute(stmt)
+        await ctx.send('Teams disbanded.')
 
     @commands.command(name='return')
+    @commands.guild_only()
     async def return_(self, ctx):
 
-        # team1Id = [channel.id for channel in ctx.guild.channels if channel.name == team1Name][0]
-        # team2Id = [channel.id for channel in ctx.guild.channels if channel.name == team2Name][0]
-        # generalId = [channel.id for channel in ctx.guild.channels if channel.name == generalName][0]
-        # team1Channel = self.bot.get_channel(team1Id)
-        # team2Channel = self.bot.get_channel(team2Id)
-        # generalChannel = self.bot.get_channel(generalId)
-        team1Channel = self.bot.get_channel(848235185384325181)
-        team2Channel = self.bot.get_channel(799472682545709056)
-        generalChannel = self.bot.get_channel(788006982534692864)
+        with self._engine.connect() as conn:
+
+            selectChannelsStmt = select(Guild.team_1_channel_id, Guild.team_2_channel_id, Guild.general_channel_id).where(Guild.guild_id == str(ctx.guild.id))
+            team1Id, team2Id, generalId = conn.execute(selectChannelsStmt).first()
+        team1Channel = self.bot.get_channel(int(team1Id))
+        team2Channel = self.bot.get_channel(int(team2Id))
+        generalChannel = self.bot.get_channel(int(generalId))
 
         players = team1Channel.members + team2Channel.members
 
@@ -308,7 +281,61 @@ class Scrim(commands.Cog):
             await player.move_to(generalChannel, reason='Scrimming is over')
         
         await ctx.send('Scrim Over!...for now ;)')
-        self._logger.info('return command successful')
+        self._logger.debug('return command successful')
+
+    @commands.command()
+    # @commands.guild_only()
+    async def addPlayerToTeam1(self, ctx, member: discord.Member):
+        side = 1
+
+        with self._engine.connect() as conn:
+            selectGuildStmt = select(Guild).where(Guild.guild_id == str(ctx.guild.id)) 
+            guildRecord = conn.execute(selectGuildStmt).first()
+            if guildRecord is None:
+                await ctx.send('This server is unregistered. Please use the register command to register this server.') 
+                return
+            if guildRecord['teams_message_id'] is None:
+                await ctx.send("Teams haven't been picked yet. Please use the teams command to pick teams for the scrim.")
+                return
+            message = await ctx.channel.fetch_message(int(guildRecord['teams_message_id']))
+            await self.addPlayer(member, message, side)
+        
+        await ctx.send(f'Player "{member.display_name}" has been added to team 1.')
+
+    @commands.command()
+    # @commands.guild_only()
+    async def addPlayerToTeam2(self, ctx, member: discord.Member):
+        side = 2
+
+        with self._engine.connect() as conn:
+            selectGuildStmt = select(Guild).where(Guild.guild_id == str(ctx.guild.id)) 
+            guildRecord = conn.execute(selectGuildStmt).first()
+            if guildRecord is None:
+                await ctx.send('This server is unregistered. Please use the register command to register this server.') 
+                return
+            if guildRecord['teams_message_id'] is None:
+                await ctx.send("Teams haven't been picked yet. Please use the teams command to pick teams for the scrim.")
+                return
+            message = await ctx.channel.fetch_message(int(guildRecord['teams_message_id']))
+            await self.addPlayer(member, message, side)
+        await ctx.send(f'Player "{member.display_name}" has been added to team 2.')
+
+    @commands.command(name='removePlayer')
+    @commands.guild_only()
+    async def removePlayerCommand(self, ctx, member: discord.Member):
+        with self._engine.connect() as conn:
+            selectGuildStmt = select(Guild).where(Guild.guild_id == str(ctx.guild.id)) 
+            guildRecord = conn.execute(selectGuildStmt).first()
+            if guildRecord is None:
+                await ctx.send('This server is unregistered. Please use the register command to register this server.') 
+                return
+            if guildRecord['teams_message_id'] is None:
+                await ctx.send("Teams haven't been picked yet. Please use the teams command to pick teams for the scrim.")
+                return
+            message = await ctx.channel.fetch_message(int(guildRecord['teams_message_id']))
+            await self.removePlayer(member, message)
+        await ctx.send(f'Player "{member.display_name}" has been removed from their team.')
+
 
 def setup(bot):
     bot.add_cog(Scrim(bot))

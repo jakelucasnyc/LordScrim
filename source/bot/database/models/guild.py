@@ -12,8 +12,8 @@ class Guild(tableBase):
     team_2_channel_id = Column(String(20))
     general_channel_id = Column(String(20))
     teams_message_id = Column(String(20))
-    team_1_emoji_text = Column(String(50))
-    team_2_emoji_text = Column(String(50))
+    team_1_emoji_text = Column(String(50), default=':one:')
+    team_2_emoji_text = Column(String(50), default=':two:')
     players = relationship('ScrimPlayer')
 
     def __init__(self, *args, **kwargs):

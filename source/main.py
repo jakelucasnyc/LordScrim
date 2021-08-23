@@ -1,6 +1,5 @@
 import logging
 import bot
-logging.basicConfig(level=logging.INFO)
 
 def readToken():
     with open('bot/secrets/bot.token') as f:
